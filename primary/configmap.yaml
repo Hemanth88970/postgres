@@ -10,17 +10,12 @@ data:
     listen_addresses = '*'
     port = 5432
     max_connections = 200
-
-    # --- Replication ---
     wal_level = replica
     max_wal_senders = 10
     max_replication_slots = 10
     wal_keep_size = 512MB
     hot_standby = on
     synchronous_commit = on
-    # archive_mode left off for this demo; enable + archive_command for PITR in prod
-
-    # --- Logging (handy for the same "watch reads vs writes" demo as the blog) ---
     log_destination = 'stderr'
     logging_collector = off
     log_min_duration_statement = 0
@@ -29,26 +24,18 @@ data:
     log_line_prefix = '%t [%p]: [%l-1] '
 
   pg_hba.conf: |
-    # TYPE  DATABASE        USER            ADDRESS                 METHOD
     local   all             all                                     trust
     host    all             all             127.0.0.1/32            scram-sha-256
     host    all             all             ::1/128                 scram-sha-256
-
-    # Allow normal app connections from inside the cluster pod network.
-    # Tighten this CIDR to your actual cluster pod/service CIDR in production.
     host    all             all             0.0.0.0/0               scram-sha-256
-
-    # Allow the replication user to connect from any pod (replica StatefulSet)
-    # for streaming replication.
-    host    replication     replicator      0.0.0.0/0               scram-sha-256
+    host    replication     pg_replica      0.0.0.0/0               scram-sha-256
 
   init-replication-user.sql: |
-    -- Runs once automatically on first boot via /docker-entrypoint-initdb.d/
     DO
     $$
     BEGIN
-      IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'replicator') THEN
-        CREATE ROLE replicator WITH REPLICATION LOGIN PASSWORD 'ChangeMeReplica1!';
+      IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'pg_replica') THEN
+        CREATE ROLE pg_replica WITH REPLICATION LOGIN PASSWORD 'Replica@2026';
       END IF;
     END
     $$;
