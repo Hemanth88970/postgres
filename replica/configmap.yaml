@@ -1,0 +1,90 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-replica-config
+  namespace: postgres-ha
+  labels:
+    app: postgres-replica
+data:
+  postgresql.conf: |
+    listen_addresses = '*'
+    port = 5432
+    max_connections = 200
+
+    # --- Hot standby / read replica ---
+    hot_standby = on
+    hot_standby_feedback = on
+    wal_level = replica
+    max_standby_streaming_delay = 30s
+
+    # --- Logging (so you can watch reads land here, per the demo) ---
+    log_destination = 'stderr'
+    logging_collector = off
+    log_min_duration_statement = 0
+    log_connections = on
+    log_disconnections = on
+    log_line_prefix = '%t [%p]: [%l-1] '
+
+  pg_hba.conf: |
+    # TYPE  DATABASE        USER            ADDRESS                 METHOD
+    local   all             all                                     trust
+    host    all             all             127.0.0.1/32            scram-sha-256
+    host    all             all             ::1/128                 scram-sha-256
+    host    all             all             0.0.0.0/0               scram-sha-256
+---
+# Second ConfigMap: ships the init-replica.sh script (kept identical to the
+# standalone replica/init-replica.sh file in this folder) so it can be
+# mounted into the initContainer in statefulset.yaml. If you edit one,
+# update the other.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-replica-init-script
+  namespace: postgres-ha
+  labels:
+    app: postgres-replica
+data:
+  init-replica.sh: |
+    #!/bin/sh
+    set -e
+
+    PGDATA_DIR="/var/lib/postgresql/data/pgdata"
+    PRIMARY_HOST="${PRIMARY_HOST:-postgres-primary}"
+    PRIMARY_PORT="${PRIMARY_PORT:-5432}"
+    REPLICATION_USER="${REPLICATION_USER:-replicator}"
+    REPLICATION_SLOT="${REPLICATION_SLOT:-replica1_slot}"
+
+    echo "[init-replica] Checking data directory: ${PGDATA_DIR}"
+
+    if [ -s "${PGDATA_DIR}/PG_VERSION" ]; then
+      echo "[init-replica] Existing PGDATA found, skipping base backup."
+      exit 0
+    fi
+
+    echo "[init-replica] No existing PGDATA, waiting for primary at ${PRIMARY_HOST}:${PRIMARY_PORT}..."
+
+    until PGPASSWORD="${REPLICATION_PASSWORD}" pg_isready -h "${PRIMARY_HOST}" -p "${PRIMARY_PORT}" -U "${REPLICATION_USER}"; do
+      echo "[init-replica] Primary not ready yet, retrying in 3s..."
+      sleep 3
+    done
+
+    echo "[init-replica] Primary is ready. Running pg_basebackup..."
+
+    mkdir -p "${PGDATA_DIR}"
+    chmod 0700 "${PGDATA_DIR}"
+
+    PGPASS_FILE="${HOME:-/var/lib/postgresql}/.pgpass"
+    echo "${PRIMARY_HOST}:${PRIMARY_PORT}:*:${REPLICATION_USER}:${REPLICATION_PASSWORD}" > "${PGPASS_FILE}"
+    chmod 0600 "${PGPASS_FILE}"
+
+    PGPASSWORD="${REPLICATION_PASSWORD}" pg_basebackup \
+      -h "${PRIMARY_HOST}" \
+      -p "${PRIMARY_PORT}" \
+      -U "${REPLICATION_USER}" \
+      -D "${PGDATA_DIR}" \
+      -Fp -Xs -P -R \
+      -S "${REPLICATION_SLOT}" \
+      -C
+
+    echo "[init-replica] Base backup complete. standby.signal + primary_conninfo written by -R flag."
+    echo "[init-replica] Replica bootstrap finished."

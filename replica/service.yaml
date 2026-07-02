@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-replica
+  namespace: postgres-ha
+  labels:
+    app: postgres-replica
+spec:
+  type: ClusterIP
+  selector:
+    app: postgres-replica
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: 5432

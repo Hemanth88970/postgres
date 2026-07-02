@@ -1,0 +1,101 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres-replica
+  namespace: postgres-ha
+  labels:
+    app: postgres-replica
+spec:
+  serviceName: postgres-replica-headless
+  replicas: 1   # bump this up to add more read replicas, e.g. replicas: 2
+  selector:
+    matchLabels:
+      app: postgres-replica
+  template:
+    metadata:
+      labels:
+        app: postgres-replica
+    spec:
+      terminationGracePeriodSeconds: 30
+      initContainers:
+        - name: clone-replica
+          image: postgres:18.4-alpine
+          command: ["/bin/sh", "/scripts/init-replica.sh"]
+          envFrom:
+            - secretRef:
+                name: postgres-replica-secret
+          env:
+            - name: PRIMARY_HOST
+              value: postgres-primary
+            - name: PRIMARY_PORT
+              value: "5432"
+            - name: REPLICATION_SLOT
+              value: replica1_slot
+          volumeMounts:
+            - name: pg-data
+              mountPath: /var/lib/postgresql/data
+            - name: init-script
+              mountPath: /scripts
+      containers:
+        - name: postgres
+          image: postgres:18.4-alpine
+          ports:
+            - containerPort: 5432
+              name: postgres
+          envFrom:
+            - secretRef:
+                name: postgres-replica-secret
+          env:
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          args:
+            - "-c"
+            - "config_file=/etc/postgresql/postgresql.conf"
+            - "-c"
+            - "hba_file=/etc/postgresql/pg_hba.conf"
+          volumeMounts:
+            - name: pg-data
+              mountPath: /var/lib/postgresql/data
+            - name: config
+              mountPath: /etc/postgresql/postgresql.conf
+              subPath: postgresql.conf
+            - name: config
+              mountPath: /etc/postgresql/pg_hba.conf
+              subPath: pg_hba.conf
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          readinessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - "pg_isready -U $POSTGRES_USER && psql -U $POSTGRES_USER -tAc 'SELECT pg_is_in_recovery();' | grep -q t"
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "postgres"]
+            initialDelaySeconds: 30
+            periodSeconds: 20
+      volumes:
+        - name: config
+          configMap:
+            name: postgres-replica-config
+        - name: init-script
+          configMap:
+            name: postgres-replica-init-script
+            defaultMode: 0755
+  volumeClaimTemplates:
+    - metadata:
+        name: pg-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: local-path
+        resources:
+          requests:
+            storage: 10Gi
